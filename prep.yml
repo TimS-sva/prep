@@ -1,0 +1,165 @@
+---
+
+
+- name: Prepare nodes
+  hosts: ansible
+  connection: local
+  become: true
+
+  handlers:
+    - name: Restart SSH daemon
+      service:
+        name: sshd
+        state: restarted
+
+  tasks:
+
+    - name: Fix keyboard layout
+      command: "/bin/localectl set-keymap de-nodeadkeys"
+      changed_when: false
+
+    - name: Install core utilities
+      yum:
+        name: "{{ core_packages }}"
+      vars:
+        core_packages:
+          - dos2unix
+          - vim
+          - nano
+          - bind-utils
+          - epel-release
+          - python3-pip
+          - firewalld
+
+    - name: Install Ansible
+      yum:
+        name: ansible
+
+    - name: Enable firewall as we don't like to live dangerously
+      service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Enable services
+      firewalld:
+        service: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - ssh
+        - http
+
+    - name: Disable SELinux as this is a lab environment
+      selinux:
+        policy: targeted
+        state: permissive
+
+    - name: Add editor YAML support
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: '0644'
+      loop:
+        - src: /opt/prep/files/yaml.nanorc
+          dest: /usr/share/nano/yaml.nanorc
+          owner: root
+          group: root
+        - src: /opt/prep/files/vimrc.local
+          dest: /root/.vimrc
+          owner: root
+          group: root
+
+    - name: Install required Python packages
+      pip:
+        executable: pip3
+        state: latest
+        name:
+          - pip
+
+    - name: Install required Python packages
+      pip:
+        executable: pip3
+        name:
+          - cryptography
+          - molecule
+          - molecule-docker
+          - ansible-lint
+          - yamllint
+
+    - name: Install VS Code-Server
+      yum:
+        name: https://github.com/coder/code-server/releases/download/v4.2.0/code-server-4.2.0-amd64.rpm
+        disable_gpg_check: true
+      tags: code_server
+
+    - name: check 4 code-server User config dir
+      file:
+        path: /root/.local/share/code-server/User
+        state: directory
+
+    - name: configure a weng compfy
+      copy:
+        content: |
+             {
+                  "terminal.integrated.copyOnSelection": true,
+                  "terminal.integrated.cursorBlinking": true,
+                  "terminal.integrated.defaultProfile.linux": "bash"
+              }
+        dest: /root/.local/share/code-server/User/settings.json
+        mode: '0644'
+
+    - name: Start and enable VS Code-Server
+      service:
+        name: code-server@root
+        state: started
+        enabled: true
+      tags: code_server
+
+    - name: "They see me waitin' they hatin'"
+      pause:
+        seconds: 5
+
+    - name: Set bind address for VS Code-Server
+      lineinfile:
+        path: /root/.config/code-server/config.yaml
+        regexp: '^bind-addr:'
+        line: 'bind-addr: 0.0.0.0:8080'
+      tags: code_server
+
+    - name: Disable telemetry for VS Code-Server (1/2)
+      lineinfile:
+        path: /usr/lib/systemd/user/code-server.service
+        regexp: '^ExecStart='
+        line: 'ExecStart=/usr/bin/code-server --disable-telemetry'
+      tags: code_server
+
+    - name: Disable telemetry for VS Code-Server (2/2)
+      lineinfile:
+        path: /usr/lib/systemd/system/code-server@.service
+        regexp: '^ExecStart='
+        line: 'ExecStart=/usr/bin/code-server --disable-telemetry'
+      tags: code_server
+
+    - name: Set password for VS Code-Server
+      lineinfile:
+        path: /root/.config/code-server/config.yaml
+        regexp: '^password:'
+        line: 'password: ansible4tw'
+      tags: code_server
+
+    - name: Restart VS Code-Server
+      service:
+        name: code-server@root
+        state: restarted
+      tags: code_server
+
+    - name: Create forward rule (runtime) for VS Code Server
+      firewalld:
+        rich_rule: rule family=ipv4 forward-port port=80 protocol=tcp to-port=8080
+        permanent: true
+        immediate: true
+        state: enabled
